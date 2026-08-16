@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-OmniMedia Studio - FFmpeg & yt-dlp All-In-One Media Suite
-A high-performance asynchronous media processing web application for Ubuntu.
+OmniMedia & Audio Studio - FFmpeg & yt-dlp All-In-One Processing Suite
+Features 5MB Chunked Uploads (100% Cloudflare 100MB Limit Proof) and
+a comprehensive Audio & Video Processing Engine for Ubuntu.
 """
 
 import os
@@ -29,7 +30,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("omnimedia-studio")
+logger = logging.getLogger("omnimeda-audio-studio")
 
 # Environment & Directory Setup
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,18 +38,20 @@ DATA_DIR = Path(os.getenv("OMNIMEDIA_DATA_DIR", BASE_DIR / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
 TEMP_DIR = DATA_DIR / "temp"
+CHUNK_DIR = TEMP_DIR / "chunks"
 
-for directory in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR]:
+for directory in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR, CHUNK_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Application state for job tracking
+# Application state for job tracking and chunk uploads
 JOBS: Dict[str, Dict[str, Any]] = {}
 PROCESSES: Dict[str, asyncio.subprocess.Process] = {}
+ACTIVE_UPLOADS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(
-    title="OmniMedia Studio",
-    description="FFmpeg & yt-dlp All-In-One Media Processing Suite",
-    version="1.0.0"
+    title="OmniMedia & Audio Studio",
+    description="High-Performance FFmpeg Audio/Video Suite with 5MB Chunked Uploads",
+    version="2.0.0"
 )
 
 # CORS Middleware
@@ -60,7 +63,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Custom Middleware for Security Headers
+# Security Headers
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -78,22 +81,20 @@ async def add_security_headers(request: Request, call_next):
     )
     return response
 
-
 # ==============================================================================
-# Helper Functions & Utilities
+# Helper Functions & Safe Path Utilities
 # ==============================================================================
 
 def sanitize_filename(filename: str) -> str:
-    """Sanitizes filename and prevents directory traversal."""
+    """Sanitizes filename and prevents directory traversal sequences."""
     base = os.path.basename(filename)
-    # Remove potentially dangerous characters, keep alphanumeric, dots, dashes, underscores
     sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', base)
     if not sanitized or sanitized.startswith('.'):
-        sanitized = f"file_{int(time.time())}_{sanitized.lstrip('.')}"
+        sanitized = f"audio_{int(time.time())}_{sanitized.lstrip('.')}"
     return sanitized
 
 def get_safe_path(category: str, filename: str) -> Path:
-    """Resolves and validates safe path within category directories."""
+    """Resolves and validates that path stays strictly within category directory."""
     clean_name = sanitize_filename(filename)
     if category == "uploads":
         target_dir = UPLOAD_DIR
@@ -103,7 +104,6 @@ def get_safe_path(category: str, filename: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid file category")
     
     target_path = (target_dir / clean_name).resolve()
-    # Check directory boundary
     try:
         target_path.relative_to(target_dir.resolve())
     except ValueError:
@@ -142,7 +142,7 @@ def format_duration(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 async def probe_media_file(file_path: Path) -> Dict[str, Any]:
-    """Runs ffprobe on a file to extract detailed metadata."""
+    """Runs ffprobe on a file to extract audio/video streams, tags, and metadata."""
     if not file_path.exists():
         return {"error": "File not found"}
     
@@ -167,6 +167,7 @@ async def probe_media_file(file_path: Path) -> Dict[str, Any]:
         info = json.loads(stdout.decode("utf-8", errors="ignore"))
         format_info = info.get("format", {})
         streams = info.get("streams", [])
+        tags = format_info.get("tags", {})
         
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
@@ -178,43 +179,44 @@ async def probe_media_file(file_path: Path) -> Dict[str, Any]:
         result = {
             "filename": file_path.name,
             "size_bytes": size_bytes,
-            "size_formatted": f"{size_bytes / (1024 * 1024):.2f} MB",
+            "size_formatted": f"{size_bytes / (1024 * 1024):.2f} MB" if size_bytes >= 1024*1024 else f"{size_bytes / 1024:.1f} KB",
             "duration": duration,
             "duration_formatted": format_duration(duration),
             "format_name": format_info.get("format_long_name", format_info.get("format_name", "Unknown")),
             "bitrate_kbps": round(bit_rate / 1000) if bit_rate else 0,
             "has_video": len(video_streams) > 0,
             "has_audio": len(audio_streams) > 0,
-            "video_streams": [],
-            "audio_streams": []
+            "tags": {
+                "title": tags.get("title", tags.get("TITLE", "")),
+                "artist": tags.get("artist", tags.get("ARTIST", "")),
+                "album": tags.get("album", tags.get("ALBUM", "")),
+                "genre": tags.get("genre", tags.get("GENRE", "")),
+                "date": tags.get("date", tags.get("DATE", tags.get("year", "")))
+            },
+            "audio_streams": [],
+            "video_streams": []
         }
         
-        for v in video_streams:
-            r_frame_rate = v.get("r_frame_rate", "0/1")
-            fps = 0.0
-            if "/" in r_frame_rate:
-                num, den = r_frame_rate.split("/")
-                fps = round(float(num) / float(den), 2) if float(den) != 0 else 0.0
-            
-            result["video_streams"].append({
-                "codec_name": v.get("codec_name", "unknown"),
-                "codec_long_name": v.get("codec_long_name", ""),
-                "width": v.get("width", 0),
-                "height": v.get("height", 0),
-                "resolution": f"{v.get('width', 0)}x{v.get('height', 0)}" if v.get("width") else "N/A",
-                "fps": fps,
-                "aspect_ratio": v.get("display_aspect_ratio", v.get("sample_aspect_ratio", "N/A")),
-                "pix_fmt": v.get("pix_fmt", "")
-            })
-            
         for a in audio_streams:
             result["audio_streams"].append({
                 "codec_name": a.get("codec_name", "unknown"),
                 "codec_long_name": a.get("codec_long_name", ""),
-                "sample_rate": a.get("sample_rate", "0"),
-                "channels": a.get("channels", 0),
+                "sample_rate": a.get("sample_rate", "44100"),
+                "channels": a.get("channels", 2),
                 "channel_layout": a.get("channel_layout", "stereo"),
                 "bitrate_kbps": round(int(a.get("bit_rate", 0)) / 1000) if a.get("bit_rate") else 0
+            })
+            
+        for v in video_streams:
+            r_fps = v.get("r_frame_rate", "0/1")
+            fps = 0.0
+            if "/" in r_fps:
+                num, den = r_fps.split("/")
+                fps = round(float(num) / float(den), 2) if float(den) != 0 else 0.0
+            result["video_streams"].append({
+                "codec_name": v.get("codec_name", "unknown"),
+                "resolution": f"{v.get('width', 0)}x{v.get('height', 0)}" if v.get("width") else "N/A",
+                "fps": fps
             })
             
         return result
@@ -223,19 +225,166 @@ async def probe_media_file(file_path: Path) -> Dict[str, Any]:
         return {"error": str(e), "filename": file_path.name}
 
 # ==============================================================================
-# Asynchronous Task Engine & Job Runner
+# 5MB Chunked Sliced Upload Engine (Cloudflare 100MB Limit Proof)
+# ==============================================================================
+
+class InitChunkUploadRequest(BaseModel):
+    filename: str
+    total_chunks: int
+    total_size: int
+
+@app.post("/api/upload/init")
+async def init_chunk_upload(req: InitChunkUploadRequest):
+    """Initializes a 5MB chunked upload session for files of any size."""
+    upload_id = str(uuid.uuid4())[:12]
+    safe_name = sanitize_filename(req.filename)
+    
+    upload_chunk_dir = CHUNK_DIR / upload_id
+    upload_chunk_dir.mkdir(parents=True, exist_ok=True)
+    
+    ACTIVE_UPLOADS[upload_id] = {
+        "upload_id": upload_id,
+        "filename": safe_name,
+        "total_chunks": req.total_chunks,
+        "total_size": req.total_size,
+        "received_chunks": set(),
+        "chunk_dir": str(upload_chunk_dir),
+        "created_at": time.time()
+    }
+    
+    logger.info(f"Initialized chunked upload [{upload_id}] for {safe_name} ({req.total_chunks} chunks, {req.total_size} bytes)")
+    return {"upload_id": upload_id, "chunk_size": 5 * 1024 * 1024}
+
+@app.post("/api/upload/chunk")
+async def upload_chunk(
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    chunk: UploadFile = File(...)
+):
+    """Receives a single 5MB chunk and saves it safely to the staging area."""
+    session = ACTIVE_UPLOADS.get(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found or expired")
+    
+    chunk_dir = Path(session["chunk_dir"])
+    chunk_file = chunk_dir / f"chunk_{chunk_index:06d}.part"
+    
+    try:
+        with chunk_file.open("wb") as f:
+            while data := await chunk.read(1024 * 512):
+                f.write(data)
+                
+        session["received_chunks"].add(chunk_index)
+        progress_pct = round((len(session["received_chunks"]) / session["total_chunks"]) * 100)
+        return {
+            "success": True,
+            "upload_id": upload_id,
+            "chunk_index": chunk_index,
+            "received_count": len(session["received_chunks"]),
+            "total_chunks": session["total_chunks"],
+            "progress_percent": progress_pct
+        }
+    except Exception as e:
+        logger.error(f"Error saving chunk {chunk_index} for {upload_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class CompleteChunkUploadRequest(BaseModel):
+    upload_id: str
+
+@app.post("/api/upload/complete")
+async def complete_chunk_upload(req: CompleteChunkUploadRequest):
+    """Stitches all 5MB chunks together into the final media file."""
+    session = ACTIVE_UPLOADS.get(req.upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+        
+    chunk_dir = Path(session["chunk_dir"])
+    total_chunks = session["total_chunks"]
+    received_count = len(session["received_chunks"])
+    
+    if received_count < total_chunks:
+        raise HTTPException(status_code=400, detail=f"Incomplete chunks: received {received_count}/{total_chunks}")
+        
+    safe_name = session["filename"]
+    target_path = UPLOAD_DIR / safe_name
+    
+    # Avoid duplicate name collisions
+    counter = 1
+    stem = target_path.stem
+    suffix = target_path.suffix
+    while target_path.exists():
+        safe_name = f"{stem}_{counter}{suffix}"
+        target_path = UPLOAD_DIR / safe_name
+        counter += 1
+        
+    logger.info(f"Stitching {total_chunks} chunks for [{req.upload_id}] -> {target_path.name}...")
+    
+    try:
+        with target_path.open("wb") as outfile:
+            for idx in range(total_chunks):
+                chunk_file = chunk_dir / f"chunk_{idx:06d}.part"
+                if not chunk_file.exists():
+                    raise HTTPException(status_code=500, detail=f"Missing chunk index {idx}")
+                with chunk_file.open("rb") as infile:
+                    shutil.copyfileobj(infile, outfile)
+                    
+        # Clean up chunks
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        del ACTIVE_UPLOADS[req.upload_id]
+        
+        probe = await probe_media_file(target_path)
+        logger.info(f"Successfully assembled: {target_path.name} ({target_path.stat().st_size} bytes)")
+        return {
+            "success": True,
+            "filename": safe_name,
+            "url": f"/api/media/uploads/{safe_name}",
+            "metadata": probe
+        }
+    except Exception as e:
+        logger.exception(f"Failed to assemble chunks for [{req.upload_id}]")
+        raise HTTPException(status_code=500, detail=f"Failed to stitch file: {str(e)}")
+
+# Fallback direct upload for small files
+@app.post("/api/upload")
+async def upload_files(files: List[UploadFile] = File(...)):
+    """Receives drag & drop uploaded media files directly."""
+    uploaded = []
+    for file in files:
+        safe_name = sanitize_filename(file.filename or f"audio_{int(time.time())}.mp3")
+        target_path = UPLOAD_DIR / safe_name
+        
+        counter = 1
+        stem = target_path.stem
+        suffix = target_path.suffix
+        while target_path.exists():
+            safe_name = f"{stem}_{counter}{suffix}"
+            target_path = UPLOAD_DIR / safe_name
+            counter += 1
+            
+        with target_path.open("wb") as buffer:
+            while chunk := await file.read(1024 * 1024 * 4):
+                buffer.write(chunk)
+                
+        probe_data = await probe_media_file(target_path)
+        uploaded.append({
+            "filename": safe_name,
+            "url": f"/api/media/uploads/{safe_name}",
+            "metadata": probe_data
+        })
+    return {"uploaded": uploaded, "count": len(uploaded)}
+
+# ==============================================================================
+# Task Engine & Job Runner
 # ==============================================================================
 
 def create_job(task_type: str, title: str, meta: Optional[Dict[str, Any]] = None) -> str:
-    """Creates a new tracking job record."""
     job_id = str(uuid.uuid4())[:8]
     JOBS[job_id] = {
         "id": job_id,
         "type": task_type,
         "title": title,
-        "status": "queued", # queued, running, completed, failed, cancelled
+        "status": "queued",
         "progress": 0,
-        "eta": "Calculating...",
         "speed": "0x",
         "logs": [],
         "output_file": None,
@@ -248,16 +397,14 @@ def create_job(task_type: str, title: str, meta: Optional[Dict[str, Any]] = None
     return job_id
 
 async def run_ffmpeg_command(job_id: str, cmd: List[str], output_filename: str, total_duration: float = 0.0):
-    """Executes FFmpeg with real-time stderr progress parsing."""
     job = JOBS.get(job_id)
     if not job:
         return
 
     job["status"] = "running"
     job["updated_at"] = time.time()
-    logger.info(f"[{job_id}] Starting FFmpeg task: {' '.join(cmd)}")
+    logger.info(f"[{job_id}] Executing FFmpeg: {' '.join(cmd)}")
     
-    # Prepend progress flags to capture detailed stdout/stderr stats
     final_cmd = ["ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1"] + cmd
     
     try:
@@ -268,7 +415,6 @@ async def run_ffmpeg_command(job_id: str, cmd: List[str], output_filename: str, 
         )
         PROCESSES[job_id] = proc
         
-        # Read progress output in real-time
         out_time_re = re.compile(r"out_time_us=(\d+)")
         speed_re = re.compile(r"speed=\s*([\d.]+)x")
         
@@ -308,22 +454,18 @@ async def run_ffmpeg_command(job_id: str, cmd: List[str], output_filename: str, 
                 job["progress"] = 100
                 job["output_file"] = output_filename
                 job["output_url"] = f"/api/media/outputs/{output_filename}"
-                job["logs"].append("FFmpeg process finished successfully.")
-                logger.info(f"[{job_id}] Completed successfully: {output_filename}")
+                job["logs"].append("Audio/Media processing finished successfully.")
+                logger.info(f"[{job_id}] Rendered output: {output_filename}")
             else:
                 job["status"] = "failed"
-                job["error"] = "Output file was not created."
+                job["error"] = "Output file was not found."
                 job["logs"].append(stderr_text[-1000:])
         else:
             if job["status"] != "cancelled":
                 job["status"] = "failed"
-                job["error"] = f"FFmpeg failed with code {return_code}"
+                job["error"] = f"FFmpeg error ({return_code})"
                 job["logs"].append(stderr_text[-2000:])
                 logger.error(f"[{job_id}] FFmpeg failed: {stderr_text[-500:]}")
-                
-    except asyncio.CancelledError:
-        job["status"] = "cancelled"
-        job["error"] = "Task was cancelled by user"
     except Exception as e:
         logger.exception(f"[{job_id}] Exception during FFmpeg execution")
         job["status"] = "failed"
@@ -332,21 +474,18 @@ async def run_ffmpeg_command(job_id: str, cmd: List[str], output_filename: str, 
         job["updated_at"] = time.time()
 
 # ==============================================================================
-# REST API Endpoints
+# System Info & File Management Endpoints
 # ==============================================================================
 
 @app.get("/api/system-info")
 async def get_system_info():
-    """Returns system specs, FFmpeg version, and yt-dlp status."""
     ffmpeg_ver = "Unknown"
     ytdlp_ver = "Unknown"
-    
     try:
         proc = await asyncio.create_subprocess_exec("ffmpeg", "-version", stdout=asyncio.subprocess.PIPE)
         stdout, _ = await proc.communicate()
         if stdout:
-            first_line = stdout.decode().splitlines()[0]
-            ffmpeg_ver = first_line.replace("ffmpeg version ", "").split(" ")[0]
+            ffmpeg_ver = stdout.decode().splitlines()[0].replace("ffmpeg version ", "").split(" ")[0]
     except Exception:
         pass
 
@@ -371,84 +510,44 @@ async def get_system_info():
         "total_jobs": len(JOBS)
     }
 
-@app.post("/api/upload")
-async def upload_files(files: List[UploadFile] = File(...)):
-    """Receives drag & drop uploaded media files."""
-    uploaded = []
-    errors = []
-    
-    for file in files:
-        safe_name = sanitize_filename(file.filename or f"upload_{int(time.time())}.tmp")
-        target_path = UPLOAD_DIR / safe_name
-        
-        # Avoid overwriting existing file with exact same name
-        counter = 1
-        stem = target_path.stem
-        suffix = target_path.suffix
-        while target_path.exists():
-            safe_name = f"{stem}_{counter}{suffix}"
-            target_path = UPLOAD_DIR / safe_name
-            counter += 1
-            
-        try:
-            with target_path.open("wb") as buffer:
-                while chunk := await file.read(1024 * 1024 * 4): # 4MB chunks
-                    buffer.write(chunk)
-            
-            probe_data = await probe_media_file(target_path)
-            uploaded.append({
-                "filename": safe_name,
-                "url": f"/api/media/uploads/{safe_name}",
-                "metadata": probe_data
-            })
-        except Exception as e:
-            logger.error(f"Upload error for {file.filename}: {e}")
-            errors.append({"filename": file.filename, "error": str(e)})
-            
-    return {"uploaded": uploaded, "errors": errors, "count": len(uploaded)}
-
 class DownloadUrlRequest(BaseModel):
     url: str
-    preset: str = "best" # best, 1080p, 720p, 480p, audio_mp3, audio_m4a, audio_wav
-    custom_filename: Optional[str] = None
+    preset: str = "audio_mp3_320" # audio_mp3_320, audio_flac, audio_wav, audio_m4a, audio_opus, best_video
 
 @app.post("/api/download-url")
 async def download_url(req: DownloadUrlRequest, background_tasks: BackgroundTasks):
-    """Downloads video or audio from URL via yt-dlp."""
+    """Downloads audio/video directly onto the Ubuntu runner (bypassing browser upload limits)."""
     parsed = urlparse(req.url.strip())
     if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="Invalid URL protocol. Only HTTP and HTTPS are supported.")
+        raise HTTPException(status_code=400, detail="Invalid URL. Only HTTP and HTTPS are supported.")
     
-    job_id = create_job("download", f"Download: {req.url[:45]}...", {"url": req.url, "preset": req.preset})
+    job_id = create_job("download", f"Fetch: {req.url[:40]}...", {"url": req.url, "preset": req.preset})
     
-    async def _execute_download(jid: str, url: str, preset: str, custom_name: Optional[str]):
-        job = JOBS[jid]
+    async def _execute_download():
+        job = JOBS[job_id]
         job["status"] = "running"
         job["progress"] = 5
-        job["logs"].append(f"Starting yt-dlp fetch for URL: {url}")
+        job["logs"].append(f"Fetching audio stream via yt-dlp: {req.url}")
         
-        out_template = str(UPLOAD_DIR / "%(title).100s_%(id)s.%(ext)s")
-        
+        out_template = str(UPLOAD_DIR / "%(title).90s_%(id)s.%(ext)s")
         cmd = ["yt-dlp", "--no-warnings", "--newline", "--progress", "--no-playlist"]
         
-        if preset == "best":
-            cmd.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
-        elif preset == "1080p":
-            cmd.extend(["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--merge-output-format", "mp4"])
-        elif preset == "720p":
-            cmd.extend(["-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best", "--merge-output-format", "mp4"])
-        elif preset == "480p":
-            cmd.extend(["-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/best", "--merge-output-format", "mp4"])
-        elif preset == "audio_mp3":
+        if req.preset == "audio_mp3_320":
             cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"])
-        elif preset == "audio_m4a":
-            cmd.extend(["-x", "--audio-format", "m4a", "--audio-quality", "0"])
-        elif preset == "audio_wav":
+        elif req.preset == "audio_flac":
+            cmd.extend(["-x", "--audio-format", "flac"])
+        elif req.preset == "audio_wav":
             cmd.extend(["-x", "--audio-format", "wav"])
-        else:
+        elif req.preset == "audio_m4a":
+            cmd.extend(["-x", "--audio-format", "m4a", "--audio-quality", "0"])
+        elif req.preset == "audio_opus":
+            cmd.extend(["-x", "--audio-format", "opus", "--audio-quality", "0"])
+        elif req.preset == "best_video":
             cmd.extend(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"])
+        else:
+            cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"])
             
-        cmd.extend(["-o", out_template, url])
+        cmd.extend(["-o", out_template, req.url.strip()])
         
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -456,12 +555,10 @@ async def download_url(req: DownloadUrlRequest, background_tasks: BackgroundTask
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            PROCESSES[jid] = proc
+            PROCESSES[job_id] = proc
             
             percent_re = re.compile(r"\[download\]\s+([\d.]+)%")
             dest_re = re.compile(r"\[(?:download|Merger|ExtractAudio)\] Destination:\s+(.+)")
-            already_re = re.compile(r"\[download\]\s+(.+)\s+has already been downloaded")
-            
             downloaded_file = None
             
             while True:
@@ -474,9 +571,6 @@ async def download_url(req: DownloadUrlRequest, background_tasks: BackgroundTask
                     match_pct = percent_re.search(line)
                     if match_pct:
                         job["progress"] = min(98, max(5, int(float(match_pct.group(1)))))
-                    match_al = already_re.search(line)
-                    if match_al:
-                        downloaded_file = match_al.group(1).strip()
                 elif "Destination:" in line:
                     match_dest = dest_re.search(line)
                     if match_dest:
@@ -486,53 +580,39 @@ async def download_url(req: DownloadUrlRequest, background_tasks: BackgroundTask
                     job["logs"].append(line[-200:])
                 job["updated_at"] = time.time()
                 
-            stderr_bytes = await proc.stderr.read()
-            stderr_text = stderr_bytes.decode("utf-8", errors="ignore")
             ret = await proc.wait()
-            
-            if jid in PROCESSES:
-                del PROCESSES[jid]
+            if job_id in PROCESSES:
+                del PROCESSES[job_id]
                 
             if ret == 0:
-                # Find most recently modified file in UPLOAD_DIR
                 all_uploads = sorted(UPLOAD_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
-                target_file = None
-                if downloaded_file and Path(downloaded_file).exists():
-                    target_file = Path(downloaded_file)
-                elif all_uploads:
-                    target_file = all_uploads[0]
-                    
+                target_file = Path(downloaded_file) if (downloaded_file and Path(downloaded_file).exists()) else (all_uploads[0] if all_uploads else None)
                 if target_file and target_file.exists():
-                    clean_name = target_file.name
                     job["status"] = "completed"
                     job["progress"] = 100
-                    job["output_file"] = clean_name
-                    job["output_url"] = f"/api/media/uploads/{clean_name}"
-                    job["logs"].append(f"Successfully downloaded: {clean_name}")
+                    job["output_file"] = target_file.name
+                    job["output_url"] = f"/api/media/uploads/{target_file.name}"
+                    job["logs"].append(f"Downloaded successfully: {target_file.name}")
                 else:
                     job["status"] = "failed"
-                    job["error"] = "Download finished but output file could not be located."
+                    job["error"] = "Download completed but file could not be located."
             else:
                 job["status"] = "failed"
-                job["error"] = f"yt-dlp failed with exit code {ret}"
-                job["logs"].append(stderr_text[-1000:])
+                job["error"] = f"yt-dlp failed (code {ret})"
         except Exception as e:
-            logger.exception(f"[{jid}] Error during download")
             job["status"] = "failed"
             job["error"] = str(e)
         finally:
             job["updated_at"] = time.time()
-            
-    background_tasks.add_task(_execute_download, job_id, req.url.strip(), req.preset, req.custom_filename)
+
+    background_tasks.add_task(_execute_download)
     return {"job_id": job_id, "status": "queued"}
 
 @app.get("/api/files")
 async def list_files():
-    """Lists all files in uploads and outputs directories with probed metadata."""
     uploads_data = []
     outputs_data = []
     
-    # Process uploads
     for f in sorted(UPLOAD_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.is_file():
             probe = await probe_media_file(f)
@@ -540,13 +620,12 @@ async def list_files():
                 "filename": f.name,
                 "category": "uploads",
                 "size_bytes": f.stat().st_size,
-                "size_formatted": f"{f.stat().st_size / (1024 * 1024):.2f} MB",
+                "size_formatted": probe.get("size_formatted", "0 KB"),
                 "mtime": f.stat().st_mtime,
                 "url": f"/api/media/uploads/{f.name}",
                 "metadata": probe
             })
             
-    # Process outputs
     for f in sorted(OUTPUT_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         if f.is_file():
             probe = await probe_media_file(f)
@@ -554,7 +633,7 @@ async def list_files():
                 "filename": f.name,
                 "category": "outputs",
                 "size_bytes": f.stat().st_size,
-                "size_formatted": f"{f.stat().st_size / (1024 * 1024):.2f} MB",
+                "size_formatted": probe.get("size_formatted", "0 KB"),
                 "mtime": f.stat().st_mtime,
                 "url": f"/api/media/outputs/{f.name}",
                 "metadata": probe
@@ -564,7 +643,6 @@ async def list_files():
 
 @app.delete("/api/files/{category}/{filename}")
 async def delete_file(category: str, filename: str):
-    """Deletes a file safely."""
     path = get_safe_path(category, filename)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -576,7 +654,6 @@ async def delete_file(category: str, filename: str):
 
 @app.post("/api/files/clear")
 async def clear_files(category: str = Query(..., regex="^(uploads|outputs|all)$")):
-    """Clears uploaded files, output files, or both."""
     deleted = 0
     dirs = []
     if category in ("uploads", "all"):
@@ -595,132 +672,81 @@ async def clear_files(category: str = Query(..., regex="^(uploads|outputs|all)$"
     return {"success": True, "deleted_count": deleted}
 
 # ==============================================================================
-# FFmpeg Media Operations Endpoints
+# Dedicated Audio Processing Endpoints
 # ==============================================================================
 
-class MergeRequest(BaseModel):
+class AudioJoinRequest(BaseModel):
     filenames: List[str]
     category: str = "uploads"
-    output_format: str = "mp4"
-    normalize_resolution: bool = True
-    target_resolution: str = "1920x1080" # 1920x1080, 1280x720, original
+    output_format: str = "mp3" # mp3, wav, flac, aac, m4a, ogg, opus
+    bitrate_kbps: int = 320
+    crossfade_sec: float = 0.0 # 0 to 5 seconds crossfade
 
-@app.post("/api/ops/merge")
-async def merge_media(req: MergeRequest, background_tasks: BackgroundTasks):
-    """Merges multiple video or audio files in order with resolution normalization."""
+@app.post("/api/ops/audio-join")
+async def join_audio_tracks(req: AudioJoinRequest, background_tasks: BackgroundTasks):
+    """Joins multiple audio tracks with optional smooth crossfading."""
     if len(req.filenames) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 files are required to merge.")
-    
+        raise HTTPException(status_code=400, detail="At least 2 audio tracks are required to join.")
+        
     file_paths = []
     total_duration = 0.0
-    has_any_video = False
-    
     for fn in req.filenames:
         p = get_safe_path(req.category, fn)
         if not p.exists():
-            raise HTTPException(status_code=404, detail=f"File not found: {fn}")
+            raise HTTPException(status_code=404, detail=f"Track not found: {fn}")
         file_paths.append(p)
         probe = await probe_media_file(p)
         total_duration += probe.get("duration", 0.0)
-        if probe.get("has_video", False):
-            has_any_video = True
-            
-    out_name = f"merged_{int(time.time())}.{req.output_format.lower()}"
-    out_path = OUTPUT_DIR / out_name
-    job_id = create_job("merge", f"Merge {len(req.filenames)} files into {out_name}", {"files": req.filenames})
-    
-    async def _execute_merge():
-        cmd = ["-y"]
         
-        if not has_any_video:
-            # Pure audio concatenation
-            filter_complex = []
-            for idx, p in enumerate(file_paths):
-                cmd.extend(["-i", str(p)])
-                filter_complex.append(f"[{idx}:a:0]")
-            filter_str = "".join(filter_complex) + f"concat=n={len(file_paths)}:v=0:a=1[aout]"
+    out_name = f"joined_{int(time.time())}.{req.output_format.lower()}"
+    out_path = OUTPUT_DIR / out_name
+    job_id = create_job("audio_join", f"Join {len(req.filenames)} tracks -> {out_name}", {"tracks": req.filenames})
+    
+    async def _execute_join():
+        cmd = ["-y"]
+        for p in file_paths:
+            cmd.extend(["-i", str(p)])
+            
+        if req.crossfade_sec > 0 and len(file_paths) == 2:
+            # 2-track acrossfade filter
             cmd.extend([
-                "-filter_complex", filter_str,
-                "-map", "[aout]",
-                "-c:a", "libmp3lame" if req.output_format == "mp3" else "aac",
-                "-b:a", "192k",
-                str(out_path)
+                "-filter_complex", f"acrossfade=d={req.crossfade_sec}:c1=tri:c2=tri"
             ])
         else:
-            # Video concatenation with smart normalization
-            if req.normalize_resolution:
-                w, h = req.target_resolution.split("x") if "x" in req.target_resolution else ("1920", "1080")
-                filter_parts = []
-                for idx, p in enumerate(file_paths):
-                    cmd.extend(["-i", str(p)])
-                    # Scale and pad to uniform resolution and 30fps
-                    filter_parts.append(
-                        f"[{idx}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{idx}];"
-                        f"[{idx}:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a{idx}];"
-                    )
-                concat_inputs = "".join([f"[v{i}][a{i}]" for i in range(len(file_paths))])
-                filter_parts.append(f"{concat_inputs}concat=n={len(file_paths)}:v=1:a=1[v_out][a_out]")
-                
-                cmd.extend([
-                    "-filter_complex", "".join(filter_parts),
-                    "-map", "[v_out]",
-                    "-map", "[a_out]",
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "22",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-movflags", "+faststart",
-                    str(out_path)
-                ])
-            else:
-                # Concat demuxer via temporary file list
-                concat_list_file = TEMP_DIR / f"concat_{job_id}.txt"
-                with concat_list_file.open("w", encoding="utf-8") as lf:
-                    for p in file_paths:
-                        # Escape single quotes for ffmpeg concat demuxer
-                        escaped_p = str(p).replace("'", "'\\''")
-                        lf.write(f"file '{escaped_p}'\n")
-                
-                cmd.extend([
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", str(concat_list_file),
-                    "-c", "copy",
-                    str(out_path)
-                ])
-                
+            filter_parts = "".join([f"[{i}:a]" for i in range(len(file_paths))])
+            filter_parts += f"concat=n={len(file_paths)}:v=0:a=1[aout]"
+            cmd.extend(["-filter_complex", filter_parts, "-map", "[aout]"])
+            
+        # Audio format codecs
+        fmt = req.output_format.lower()
+        if fmt == "mp3":
+            cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{req.bitrate_kbps}k"])
+        elif fmt == "wav":
+            cmd.extend(["-c:a", "pcm_s16le"])
+        elif fmt == "flac":
+            cmd.extend(["-c:a", "flac"])
+        elif fmt in ("aac", "m4a"):
+            cmd.extend(["-c:a", "aac", "-b:a", f"{req.bitrate_kbps}k"])
+        elif fmt in ("ogg", "opus"):
+            cmd.extend(["-c:a", "libopus", "-b:a", f"{req.bitrate_kbps}k"])
+            
+        cmd.append(str(out_path))
         await run_ffmpeg_command(job_id, cmd, out_name, total_duration)
-        # Clean up temp concat list if created
-        concat_list_file = TEMP_DIR / f"concat_{job_id}.txt"
-        if concat_list_file.exists():
-            try:
-                concat_list_file.unlink()
-            except Exception:
-                pass
 
-    background_tasks.add_task(_execute_merge)
+    background_tasks.add_task(_execute_join)
     return {"job_id": job_id, "status": "queued", "output_filename": out_name}
 
-class ConvertRequest(BaseModel):
+class AudioConvertRequest(BaseModel):
     filename: str
     category: str = "uploads"
-    output_format: str # mp4, mkv, webm, avi, mov, mp3, wav, aac, flac, ogg, gif
-    video_codec: str = "libx264" # libx264, libx265, libvpx-vp9, libaom-av1, copy, none
-    audio_codec: str = "aac" # aac, libmp3lame, libopus, flac, copy, none
-    crf: int = 23 # 0-51
-    preset: str = "medium" # ultrafast, fast, medium, slow
-    video_bitrate_kbps: Optional[int] = None
-    audio_bitrate_kbps: int = 192
-    resolution_scale: Optional[str] = None # 1920x1080, 1280x720, 854x480, etc.
-    fps: Optional[int] = None
-    gif_fps: int = 15
-    gif_width: int = 480
+    output_format: str # mp3, wav, flac, aac, m4a, ogg, opus, aiff
+    bitrate_kbps: int = 320 # 64 to 320
+    sample_rate: str = "44100" # 44100, 48000, 96000, keep
+    channels: str = "keep" # stereo, mono, keep
 
-@app.post("/api/ops/convert")
-async def convert_media(req: ConvertRequest, background_tasks: BackgroundTasks):
-    """Converts media to various video, audio, or animated GIF formats."""
+@app.post("/api/ops/audio-convert")
+async def convert_audio(req: AudioConvertRequest, background_tasks: BackgroundTasks):
+    """Converts audio format, bitrates, sample rates (44.1k/48k/96k), and stereo/mono."""
     in_path = get_safe_path(req.category, req.filename)
     if not in_path.exists():
         raise HTTPException(status_code=404, detail="Input file not found")
@@ -729,86 +755,54 @@ async def convert_media(req: ConvertRequest, background_tasks: BackgroundTasks):
     duration = probe.get("duration", 0.0)
     
     stem = in_path.stem
-    out_format = req.output_format.lower()
-    out_name = f"{stem}_converted_{int(time.time())}.{out_format}"
+    fmt = req.output_format.lower()
+    out_name = f"{stem}_converted_{int(time.time())}.{fmt}"
     out_path = OUTPUT_DIR / out_name
     
-    job_id = create_job("convert", f"Convert {req.filename} to {out_format.upper()}", {"input": req.filename, "format": out_format})
+    job_id = create_job("audio_convert", f"Convert {req.filename} to {fmt.upper()} ({req.bitrate_kbps}k)")
     
     async def _execute_convert():
-        cmd = ["-y", "-i", str(in_path)]
+        cmd = ["-y", "-i", str(in_path), "-vn"]
         
-        if out_format == "gif":
-            # High-quality 2-pass GIF palette filter
-            fps = max(1, min(30, req.gif_fps))
-            width = max(120, min(1920, req.gif_width))
-            vf = f"fps={fps},scale={width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
-            cmd.extend(["-vf", vf, str(out_path)])
-        elif out_format in ("mp3", "wav", "aac", "flac", "ogg", "m4a", "opus"):
-            # Audio-only extraction / conversion
-            cmd.extend(["-vn"])
-            if out_format == "mp3":
-                cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{req.audio_bitrate_kbps}k"])
-            elif out_format == "wav":
-                cmd.extend(["-c:a", "pcm_s16le"])
-            elif out_format == "aac" or out_format == "m4a":
-                cmd.extend(["-c:a", "aac", "-b:a", f"{req.audio_bitrate_kbps}k"])
-            elif out_format == "flac":
-                cmd.extend(["-c:a", "flac"])
-            elif out_format == "ogg" or out_format == "opus":
-                cmd.extend(["-c:a", "libopus", "-b:a", f"{req.audio_bitrate_kbps}k"])
-            cmd.append(str(out_path))
-        else:
-            # Video Conversion
-            vf_filters = []
-            if req.resolution_scale and "x" in req.resolution_scale:
-                w, h = req.resolution_scale.split("x")
-                vf_filters.append(f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")
-            if req.fps and req.fps > 0:
-                vf_filters.append(f"fps={req.fps}")
-                
-            if vf_filters:
-                cmd.extend(["-vf", ",".join(vf_filters)])
-                
-            if req.video_codec == "none":
-                cmd.append("-vn")
-            elif req.video_codec == "copy":
-                cmd.extend(["-c:v", "copy"])
-            else:
-                cmd.extend(["-c:v", req.video_codec, "-preset", req.preset])
-                if req.video_bitrate_kbps:
-                    cmd.extend(["-b:v", f"{req.video_bitrate_kbps}k"])
-                else:
-                    cmd.extend(["-crf", str(req.crf)])
-                    
-            if req.audio_codec == "none":
-                cmd.append("-an")
-            elif req.audio_codec == "copy":
-                cmd.extend(["-c:a", "copy"])
-            else:
-                cmd.extend(["-c:a", req.audio_codec, "-b:a", f"{req.audio_bitrate_kbps}k"])
-                
-            if out_format in ("mp4", "m4v", "mov"):
-                cmd.extend(["-movflags", "+faststart"])
-                
-            cmd.append(str(out_path))
+        if req.sample_rate != "keep":
+            cmd.extend(["-ar", str(req.sample_rate)])
+        if req.channels == "mono":
+            cmd.extend(["-ac", "1"])
+        elif req.channels == "stereo":
+            cmd.extend(["-ac", "2"])
             
+        if fmt == "mp3":
+            cmd.extend(["-c:a", "libmp3lame", "-b:a", f"{req.bitrate_kbps}k"])
+        elif fmt == "wav":
+            cmd.extend(["-c:a", "pcm_s16le"])
+        elif fmt == "flac":
+            cmd.extend(["-c:a", "flac"])
+        elif fmt in ("aac", "m4a"):
+            cmd.extend(["-c:a", "aac", "-b:a", f"{req.bitrate_kbps}k"])
+        elif fmt in ("ogg", "opus"):
+            cmd.extend(["-c:a", "libopus", "-b:a", f"{req.bitrate_kbps}k"])
+        elif fmt == "aiff":
+            cmd.extend(["-c:a", "pcm_s16be"])
+            
+        cmd.append(str(out_path))
         await run_ffmpeg_command(job_id, cmd, out_name, duration)
 
     background_tasks.add_task(_execute_convert)
     return {"job_id": job_id, "status": "queued", "output_filename": out_name}
 
-class TrimRequest(BaseModel):
+class AudioTrimRequest(BaseModel):
     filename: str
     category: str = "uploads"
-    start_time: str # "00:00:10" or "10.5"
-    end_time: Optional[str] = None # "00:00:45"
-    duration: Optional[str] = None # "35.0"
-    mode: str = "precise" # precise (re-encode) or fast (stream copy)
+    start_time: str # "00:01:15" or seconds
+    end_time: Optional[str] = None
+    duration: Optional[str] = None
+    fade_in_sec: float = 0.0 # 0 to 5 seconds
+    fade_out_sec: float = 0.0 # 0 to 5 seconds
+    output_format: str = "mp3"
 
-@app.post("/api/ops/trim")
-async def trim_media(req: TrimRequest, background_tasks: BackgroundTasks):
-    """Trims / cuts video or audio accurately."""
+@app.post("/api/ops/audio-trim")
+async def trim_audio(req: AudioTrimRequest, background_tasks: BackgroundTasks):
+    """Trims audio clips with millisecond precision and fade-in/fade-out curves."""
     in_path = get_safe_path(req.category, req.filename)
     if not in_path.exists():
         raise HTTPException(status_code=404, detail="Input file not found")
@@ -822,309 +816,233 @@ async def trim_media(req: TrimRequest, background_tasks: BackgroundTasks):
     elif dur_sec > 0:
         cut_duration = dur_sec
     else:
-        raise HTTPException(status_code=400, detail="Must provide valid end_time or duration greater than start_time")
+        raise HTTPException(status_code=400, detail="Invalid cut duration")
         
     stem = in_path.stem
-    suffix = in_path.suffix.lstrip('.')
-    out_name = f"{stem}_trimmed_{int(time.time())}.{suffix}"
+    fmt = req.output_format.lower()
+    out_name = f"{stem}_trimmed_{int(time.time())}.{fmt}"
     out_path = OUTPUT_DIR / out_name
     
-    job_id = create_job("trim", f"Trim {req.filename} ({format_duration(start_sec)} -> {format_duration(start_sec + cut_duration)})")
+    job_id = create_job("audio_trim", f"Trim {req.filename} ({format_duration(start_sec)} - {format_duration(start_sec + cut_duration)})")
     
     async def _execute_trim():
-        cmd = ["-y"]
-        if req.mode == "fast":
-            # Fast keyframe seek with stream copy
-            cmd.extend([
-                "-ss", str(start_sec),
-                "-i", str(in_path),
-                "-t", str(cut_duration),
-                "-c", "copy",
-                str(out_path)
-            ])
+        cmd = ["-y", "-ss", str(start_sec), "-i", str(in_path), "-t", str(cut_duration), "-vn"]
+        
+        af_filters = []
+        if req.fade_in_sec > 0:
+            af_filters.append(f"afade=t=in:st=0:d={req.fade_in_sec}")
+        if req.fade_out_sec > 0:
+            fade_start = max(0, cut_duration - req.fade_out_sec)
+            af_filters.append(f"afade=t=out:st={fade_start}:d={req.fade_out_sec}")
+            
+        if af_filters:
+            cmd.extend(["-af", ",".join(af_filters)])
+            
+        if fmt == "mp3":
+            cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
+        elif fmt == "wav":
+            cmd.extend(["-c:a", "pcm_s16le"])
+        elif fmt == "flac":
+            cmd.extend(["-c:a", "flac"])
         else:
-            # Frame-accurate cut with re-encode
-            cmd.extend([
-                "-ss", str(start_sec),
-                "-i", str(in_path),
-                "-t", str(cut_duration),
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-movflags", "+faststart",
-                str(out_path)
-            ])
+            cmd.extend(["-c:a", "aac", "-b:a", "256k"])
+            
+        cmd.append(str(out_path))
         await run_ffmpeg_command(job_id, cmd, out_name, cut_duration)
 
     background_tasks.add_task(_execute_trim)
     return {"job_id": job_id, "status": "queued", "output_filename": out_name}
 
-class CompressRequest(BaseModel):
+class AudioLoudnessRequest(BaseModel):
     filename: str
     category: str = "uploads"
-    target_size_mb: Optional[float] = None # e.g. 8.0 for Discord
-    resolution_scale: Optional[str] = "1280x720" # 1920x1080, 1280x720, 854x480, 640x360
-    crf: int = 28 # 18-35
+    mode: str = "ebur128" # ebur128 (standard Spotify/podcast normalization) or boost
+    volume_multiplier: float = 1.5 # 0.1 to 3.0 for boost mode
+    target_lufs: float = -16.0 # -14 for Spotify/YouTube, -16 for Podcasts
 
-@app.post("/api/ops/compress")
-async def compress_media(req: CompressRequest, background_tasks: BackgroundTasks):
-    """Compresses video to fit within target size (e.g. Discord 8MB/25MB) or scale resolution."""
+@app.post("/api/ops/audio-loudness")
+async def audio_loudness(req: AudioLoudnessRequest, background_tasks: BackgroundTasks):
+    """Boosts volume up to 300% or applies broadcast EBU R128 Loudness Normalization."""
     in_path = get_safe_path(req.category, req.filename)
     if not in_path.exists():
         raise HTTPException(status_code=404, detail="Input file not found")
         
     probe = await probe_media_file(in_path)
     duration = probe.get("duration", 0.0)
-    if duration <= 0:
-        duration = 10.0
-        
+    
     stem = in_path.stem
-    out_name = f"{stem}_compressed_{int(time.time())}.mp4"
+    suffix = in_path.suffix.lstrip('.') or "mp3"
+    out_name = f"{stem}_loudness_{int(time.time())}.{suffix}"
     out_path = OUTPUT_DIR / out_name
     
-    job_id = create_job("compress", f"Compress {req.filename} to {req.target_size_mb or 'CRF ' + str(req.crf)} MB")
+    job_id = create_job("audio_loudness", f"Loudness Normalization ({req.mode.upper()}) on {req.filename}")
     
-    async def _execute_compress():
-        cmd = ["-y", "-i", str(in_path)]
-        vf_filters = []
+    async def _execute_loudness():
+        cmd = ["-y", "-i", str(in_path), "-vn"]
         
-        if req.resolution_scale and "x" in req.resolution_scale:
-            w, h = req.resolution_scale.split("x")
-            vf_filters.append(f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")
+        if req.mode == "ebur128":
+            cmd.extend(["-af", f"loudnorm=I={req.target_lufs}:TP=-1.5:LRA=11"])
+        else: # boost
+            cmd.extend(["-af", f"volume={req.volume_multiplier}"])
             
-        if vf_filters:
-            cmd.extend(["-vf", ",".join(vf_filters)])
-            
-        if req.target_size_mb and req.target_size_mb > 0:
-            # Calculate target video bitrate = (target_bytes * 8) / duration - audio_bitrate
-            target_bits = req.target_size_mb * 8 * 1024 * 1024 * 0.95 # 5% safety margin
-            audio_bitrate_kbps = 96
-            video_bitrate_kbps = max(50, int((target_bits / duration) / 1000 - audio_bitrate_kbps))
-            cmd.extend([
-                "-c:v", "libx264",
-                "-b:v", f"{video_bitrate_kbps}k",
-                "-maxrate", f"{int(video_bitrate_kbps * 1.3)}k",
-                "-bufsize", f"{int(video_bitrate_kbps * 2)}k",
-                "-preset", "medium",
-                "-c:a", "aac",
-                "-b:a", f"{audio_bitrate_kbps}k",
-                "-movflags", "+faststart",
-                str(out_path)
-            ])
-        else:
-            cmd.extend([
-                "-c:v", "libx264",
-                "-crf", str(req.crf),
-                "-preset", "medium",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                str(out_path)
-            ])
-            
+        cmd.extend(["-c:a", "libmp3lame" if suffix == "mp3" else "aac", "-b:a", "320k", str(out_path)])
         await run_ffmpeg_command(job_id, cmd, out_name, duration)
 
-    background_tasks.add_task(_execute_compress)
+    background_tasks.add_task(_execute_loudness)
     return {"job_id": job_id, "status": "queued", "output_filename": out_name}
 
-class AudioReplaceRequest(BaseModel):
-    video_filename: str
-    audio_filename: str
-    video_category: str = "uploads"
-    audio_category: str = "uploads"
-    action: str = "replace" # replace, mix
-    video_volume: float = 1.0 # 0.0 - 2.0
-    audio_volume: float = 1.0 # 0.0 - 2.0
-    match_duration_to_video: bool = True
-
-@app.post("/api/ops/audio-replace")
-async def audio_replace_mix(req: AudioReplaceRequest, background_tasks: BackgroundTasks):
-    """Replaces original video audio with another audio track or mixes them together."""
-    v_path = get_safe_path(req.video_category, req.video_filename)
-    a_path = get_safe_path(req.audio_category, req.audio_filename)
-    
-    if not v_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
-    if not a_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found")
-        
-    probe_v = await probe_media_file(v_path)
-    v_duration = probe_v.get("duration", 0.0)
-    
-    stem = v_path.stem
-    out_name = f"{stem}_{req.action}Audio_{int(time.time())}.mp4"
-    out_path = OUTPUT_DIR / out_name
-    
-    job_id = create_job("audio_mix", f"{req.action.capitalize()} audio on {req.video_filename}")
-    
-    async def _execute_audio_mux():
-        cmd = ["-y", "-i", str(v_path), "-i", str(a_path)]
-        
-        if req.action == "replace":
-            cmd.extend([
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-af", f"volume={req.audio_volume}"
-            ])
-            if req.match_duration_to_video:
-                cmd.append("-shortest")
-        else: # mix
-            filter_str = (
-                f"[0:a]volume={req.video_volume}[a0];"
-                f"[1:a]volume={req.audio_volume}[a1];"
-                f"[a0][a1]amix=inputs=2:duration={'first' if req.match_duration_to_video else 'longest'}[aout]"
-            )
-            cmd.extend([
-                "-map", "0:v:0",
-                "-filter_complex", filter_str,
-                "-map", "[aout]",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k"
-            ])
-            
-        cmd.extend(["-movflags", "+faststart", str(out_path)])
-        await run_ffmpeg_command(job_id, cmd, out_name, v_duration)
-
-    background_tasks.add_task(_execute_audio_mux)
-    return {"job_id": job_id, "status": "queued", "output_filename": out_name}
-
-class TransformRequest(BaseModel):
+class AudioPitchTempoRequest(BaseModel):
     filename: str
     category: str = "uploads"
-    speed: float = 1.0 # 0.25 to 4.0
+    tempo: float = 1.0 # 0.5 to 2.0 (Speed without changing pitch)
+    pitch_semitones: int = 0 # -12 to +12 semitones
     reverse: bool = False
-    rotate: int = 0 # 0, 90, 180, 270
-    hflip: bool = False
-    vflip: bool = False
 
-@app.post("/api/ops/transform")
-async def transform_media(req: TransformRequest, background_tasks: BackgroundTasks):
-    """Applies speed change, reverse, rotate, or flip effects."""
+@app.post("/api/ops/audio-pitch-tempo")
+async def audio_pitch_tempo(req: AudioPitchTempoRequest, background_tasks: BackgroundTasks):
+    """Changes tempo without pitch shift, or changes musical pitch (-12 to +12 semitones)."""
     in_path = get_safe_path(req.category, req.filename)
     if not in_path.exists():
         raise HTTPException(status_code=404, detail="Input file not found")
         
     probe = await probe_media_file(in_path)
     duration = probe.get("duration", 0.0)
-    has_video = probe.get("has_video", False)
     
     stem = in_path.stem
-    out_name = f"{stem}_fx_{int(time.time())}.mp4"
+    suffix = in_path.suffix.lstrip('.') or "mp3"
+    out_name = f"{stem}_fx_{int(time.time())}.{suffix}"
     out_path = OUTPUT_DIR / out_name
     
-    job_id = create_job("transform", f"Transform {req.filename} (Speed {req.speed}x)")
+    job_id = create_job("audio_pitch_tempo", f"Pitch ({req.pitch_semitones}st) & Tempo ({req.tempo}x) on {req.filename}")
     
-    async def _execute_transform():
-        cmd = ["-y", "-i", str(in_path)]
-        vf = []
-        af = []
+    async def _execute_pitch_tempo():
+        cmd = ["-y", "-i", str(in_path), "-vn"]
+        af_filters = []
         
-        # Speed adjustment
-        if req.speed != 1.0 and 0.25 <= req.speed <= 4.0:
-            pts_mult = 1.0 / req.speed
-            vf.append(f"setpts={pts_mult}*PTS")
-            # FFmpeg atempo only supports 0.5 to 2.0 per filter instance; chain if needed
-            sp = req.speed
-            while sp > 2.0:
-                af.append("atempo=2.0")
-                sp /= 2.0
-            while sp < 0.5:
-                af.append("atempo=0.5")
-                sp /= 0.5
-            af.append(f"atempo={sp}")
+        # Pitch shifting via asetrate + aresample + atempo
+        if req.pitch_semitones != 0:
+            sample_rate = 44100
+            for a in probe.get("audio_streams", []):
+                if a.get("sample_rate"):
+                    sample_rate = int(a["sample_rate"])
+                    break
+            # pitch factor = 2^(semitones / 12)
+            pitch_factor = 2.0 ** (req.pitch_semitones / 12.0)
+            new_rate = int(sample_rate * pitch_factor)
+            comp_tempo = 1.0 / pitch_factor
+            af_filters.append(f"asetrate={new_rate},aresample={sample_rate},atempo={comp_tempo:.4f}")
+            
+        # Tempo shifting
+        if req.tempo != 1.0 and 0.5 <= req.tempo <= 2.0:
+            af_filters.append(f"atempo={req.tempo}")
             
         if req.reverse:
-            vf.append("reverse")
-            af.append("areverse")
+            af_filters.append("areverse")
             
-        if req.rotate == 90:
-            vf.append("transpose=1")
-        elif req.rotate == 180:
-            vf.append("transpose=1,transpose=1")
-        elif req.rotate == 270:
-            vf.append("transpose=2")
+        if af_filters:
+            cmd.extend(["-af", ",".join(af_filters)])
             
-        if req.hflip:
-            vf.append("hflip")
-        if req.vflip:
-            vf.append("vflip")
-            
-        if vf and has_video:
-            cmd.extend(["-vf", ",".join(vf), "-c:v", "libx264", "-preset", "fast", "-crf", "22"])
-        else:
-            cmd.extend(["-c:v", "copy"])
-            
-        if af:
-            cmd.extend(["-af", ",".join(af), "-c:a", "aac", "-b:a", "192k"])
-        else:
-            cmd.extend(["-c:a", "copy"])
-            
-        cmd.extend(["-movflags", "+faststart", str(out_path)])
-        calc_duration = duration / req.speed if req.speed > 0 else duration
-        await run_ffmpeg_command(job_id, cmd, out_name, calc_duration)
+        cmd.extend(["-c:a", "libmp3lame" if suffix == "mp3" else "aac", "-b:a", "320k", str(out_path)])
+        calc_dur = duration / req.tempo if req.tempo > 0 else duration
+        await run_ffmpeg_command(job_id, cmd, out_name, calc_dur)
 
-    background_tasks.add_task(_execute_transform)
+    background_tasks.add_task(_execute_pitch_tempo)
     return {"job_id": job_id, "status": "queued", "output_filename": out_name}
 
-class SnapshotRequest(BaseModel):
+class AudioEqRequest(BaseModel):
     filename: str
     category: str = "uploads"
-    timestamp: str # "00:00:15" or "15.0"
-    format: str = "png" # png, jpg
+    preset: str # bass_boost, treble_boost, vocal_boost, highpass_rumble, lowpass_hiss
 
-@app.post("/api/ops/snapshot")
-async def extract_snapshot(req: SnapshotRequest):
-    """Extracts a high-resolution screenshot frame at timestamp."""
+@app.post("/api/ops/audio-eq")
+async def audio_equalizer(req: AudioEqRequest, background_tasks: BackgroundTasks):
+    """Applies equalizer and noise filtering presets."""
     in_path = get_safe_path(req.category, req.filename)
     if not in_path.exists():
         raise HTTPException(status_code=404, detail="Input file not found")
         
-    ts_sec = parse_time_str(req.timestamp)
+    probe = await probe_media_file(in_path)
+    duration = probe.get("duration", 0.0)
+    
     stem = in_path.stem
-    fmt = "jpg" if req.format.lower() in ("jpg", "jpeg") else "png"
-    out_name = f"{stem}_frame_{int(ts_sec)}s_{int(time.time())}.{fmt}"
+    suffix = in_path.suffix.lstrip('.') or "mp3"
+    out_name = f"{stem}_eq_{req.preset}_{int(time.time())}.{suffix}"
     out_path = OUTPUT_DIR / out_name
     
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(ts_sec),
-        "-i", str(in_path),
-        "-frames:v", "1",
-        "-q:v", "2",
-        str(out_path)
-    ]
+    job_id = create_job("audio_eq", f"Apply EQ [{req.preset.replace('_', ' ').title()}] to {req.filename}")
+    
+    presets = {
+        "bass_boost": "bass=g=9:f=110:w=0.6",
+        "treble_boost": "treble=g=8:f=7500:w=0.6",
+        "vocal_boost": "equalizer=f=1200:t=q:w=1.2:g=7",
+        "highpass_rumble": "highpass=f=80",
+        "lowpass_hiss": "lowpass=f=9000"
+    }
+    af = presets.get(req.preset, "bass=g=6:f=100")
+    
+    async def _execute_eq():
+        cmd = [
+            "-y", "-i", str(in_path),
+            "-vn",
+            "-af", af,
+            "-c:a", "libmp3lame" if suffix == "mp3" else "aac",
+            "-b:a", "320k",
+            str(out_path)
+        ]
+        await run_ffmpeg_command(job_id, cmd, out_name, duration)
+
+    background_tasks.add_task(_execute_eq)
+    return {"job_id": job_id, "status": "queued", "output_filename": out_name}
+
+class AudioTagRequest(BaseModel):
+    filename: str
+    category: str = "uploads"
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    genre: Optional[str] = None
+    year: Optional[str] = None
+
+@app.post("/api/ops/audio-tag")
+async def write_audio_tags(req: AudioTagRequest):
+    """Writes ID3 tags (Title, Artist, Album, Genre, Year) to an audio file."""
+    in_path = get_safe_path(req.category, req.filename)
+    if not in_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    stem = in_path.stem
+    suffix = in_path.suffix.lstrip('.') or "mp3"
+    out_name = f"{stem}_tagged_{int(time.time())}.{suffix}"
+    out_path = OUTPUT_DIR / out_name
+    
+    cmd = ["ffmpeg", "-y", "-i", str(in_path), "-c", "copy"]
+    if req.title: cmd.extend(["-metadata", f"title={req.title}"])
+    if req.artist: cmd.extend(["-metadata", f"artist={req.artist}"])
+    if req.album: cmd.extend(["-metadata", f"album={req.album}"])
+    if req.genre: cmd.extend(["-metadata", f"genre={req.genre}"])
+    if req.year: cmd.extend(["-metadata", f"date={req.year}"])
+    cmd.append(str(out_path))
     
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await proc.communicate()
     
     if proc.returncode != 0 or not out_path.exists():
-        raise HTTPException(status_code=500, detail=f"Frame extraction failed: {stderr.decode(errors='ignore')}")
+        raise HTTPException(status_code=500, detail=f"Tagging failed: {stderr.decode(errors='ignore')}")
         
-    return {
-        "success": True,
-        "filename": out_name,
-        "url": f"/api/media/outputs/{out_name}"
-    }
+    probe = await probe_media_file(out_path)
+    return {"success": True, "output_filename": out_name, "metadata": probe}
 
 # ==============================================================================
-# Job Status & File Serving Endpoints
+# Job Polling & File Streaming
 # ==============================================================================
 
 @app.get("/api/jobs")
 async def list_jobs():
-    """Lists all active and completed jobs."""
     sorted_jobs = sorted(JOBS.values(), key=lambda j: j["created_at"], reverse=True)
     return {"jobs": sorted_jobs[:50]}
 
 @app.get("/api/jobs/{job_id}")
 async def get_job_status(job_id: str):
-    """Returns status and progress of a single job."""
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1132,25 +1050,21 @@ async def get_job_status(job_id: str):
 
 @app.post("/api/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str):
-    """Cancels a running job."""
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-        
     if job_id in PROCESSES:
-        proc = PROCESSES[job_id]
         try:
-            proc.terminate()
+            PROCESSES[job_id].terminate()
             job["status"] = "cancelled"
-            job["logs"].append("Process terminated by user request.")
+            job["logs"].append("Process cancelled by user.")
         except Exception as e:
-            logger.error(f"Error terminating process {job_id}: {e}")
-            
+            logger.error(f"Error cancelling {job_id}: {e}")
     return {"success": True, "job_id": job_id}
 
 @app.get("/api/media/{category}/{filename}")
 async def stream_media(category: str, filename: str, request: Request):
-    """Streams video / audio with Range header support for seeking."""
+    """Streams audio/video with Range header support for seeking."""
     path = get_safe_path(category, filename)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Media file not found")
@@ -1158,30 +1072,23 @@ async def stream_media(category: str, filename: str, request: Request):
     file_size = path.stat().st_size
     range_header = request.headers.get("Range")
     
-    # Determine mime type
     suffix = path.suffix.lower()
     content_types = {
-        ".mp4": "video/mp4",
-        ".mkv": "video/x-matroska",
-        ".webm": "video/webm",
-        ".avi": "video/x-msvideo",
-        ".mov": "video/quicktime",
         ".mp3": "audio/mpeg",
         ".wav": "audio/wav",
-        ".aac": "audio/aac",
         ".flac": "audio/flac",
+        ".aac": "audio/aac",
+        ".m4a": "audio/mp4",
         ".ogg": "audio/ogg",
         ".opus": "audio/opus",
-        ".m4a": "audio/mp4",
-        ".gif": "image/gif",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg"
+        ".aiff": "audio/x-aiff",
+        ".mp4": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm"
     }
     content_type = content_types.get(suffix, "application/octet-stream")
     
     if range_header:
-        # Partial Content / Seek
         try:
             byte1, byte2 = 0, None
             m = re.search(r"bytes=(\d+)-(\d*)", range_header)
@@ -1214,13 +1121,12 @@ async def stream_media(category: str, filename: str, request: Request):
             }
             return StreamingResponse(iterfile(byte1, length), status_code=206, headers=headers)
         except Exception as e:
-            logger.error(f"Error handling Range request: {e}")
+            logger.error(f"Error streaming Range: {e}")
             
     return FileResponse(path, media_type=content_type)
 
 @app.get("/api/download/{category}/{filename}")
 async def download_file(category: str, filename: str):
-    """Forces browser file download attachment."""
     path = get_safe_path(category, filename)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -1228,22 +1134,21 @@ async def download_file(category: str, filename: str):
 
 @app.get("/api/download-all-zip")
 async def download_all_zip(category: str = Query("outputs", regex="^(uploads|outputs)$")):
-    """Packages all files from category into a single downloadable ZIP."""
     target_dir = UPLOAD_DIR if category == "uploads" else OUTPUT_DIR
     files = list(target_dir.glob("*"))
     if not files:
-        raise HTTPException(status_code=404, detail="No files available to zip")
+        raise HTTPException(status_code=404, detail="No files to zip")
         
-    zip_path = TEMP_DIR / f"{category}_bundle_{int(time.time())}.zip"
+    zip_path = TEMP_DIR / f"{category}_audio_bundle_{int(time.time())}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
             if f.is_file():
                 zf.write(f, arcname=f.name)
                 
-    return FileResponse(zip_path, filename=f"omnimedia_{category}.zip", media_type="application/zip")
+    return FileResponse(zip_path, filename=f"omniaudio_{category}.zip", media_type="application/zip")
 
 # ==============================================================================
-# Static UI Assets Mount
+# Mount Static Frontend
 # ==============================================================================
 
 STATIC_DIR = BASE_DIR / "static"
@@ -1254,5 +1159,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 7860))
     host = os.getenv("HOST", "0.0.0.0")
-    print(f"🚀 Starting OmniMedia Studio on http://{host}:{port}")
+    print(f"🚀 Starting OmniMedia & Audio Studio on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
