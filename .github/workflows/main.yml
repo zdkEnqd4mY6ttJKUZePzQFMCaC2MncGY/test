@@ -1,4 +1,4 @@
-name: FFmpeg Media Studio & Video Toolkit (Ubuntu Loop) - by Redwanul Haque
+name: FFmpeg Audio & Media Studio (Ubuntu Loop) - by Redwanul Haque
 
 on:
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
       - name: ⚡ System Specs & Performance Tuning
         run: |
           echo "=============================================="
-          echo "🖥️ Runner Specs & FFmpeg Engine Optimization"
+          echo "🖥️ Runner Specs & FFmpeg Audio Engine Optimization"
           echo "CPU Cores : $(nproc)"
           echo "RAM       : $(free -h | awk '/^Mem:/ {print $2}')"
           echo "Disk Free : $(df -h / | awk 'NR==2 {print $4}')"
@@ -64,19 +64,19 @@ jobs:
       # ───────────────────────────────────────────────
       # Step 4: Install FFmpeg, yt-dlp & Python Dependencies
       # ───────────────────────────────────────────────
-      - name: 📦 Install FFmpeg, System Tools & Python Libraries
+      - name: 📦 Install FFmpeg, Audio Codecs & Python Packages
         id: install-deps
         run: |
           echo "📦 Installing system audio/video codecs & tools..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg qrencode jq curl python3-pip
+          sudo apt-get install -y -qq ffmpeg libavcodec-extra qrencode jq curl python3-pip
 
           echo "🐍 Upgrading pip & installing FastAPI, Uvicorn, yt-dlp..."
           python3 -m pip install --upgrade pip setuptools wheel
           python3 -m pip install --no-cache-dir \
             "fastapi>=0.111.0" \
             "uvicorn[standard]>=0.30.0" \
-            "yt-dlp>=2026.07.04" \
+            "yt-dlp>=2024.8.6" \
             "python-multipart>=0.0.9" \
             "aiofiles>=23.2.1" \
             "pydantic>=2.7.0"
@@ -85,12 +85,12 @@ jobs:
           echo "✅ Dependencies installed successfully."
 
       # ───────────────────────────────────────────────
-      # Step 5: Launch OmniMedia Studio Server
+      # Step 5: Launch OmniAudio Studio Server
       # ───────────────────────────────────────────────
-      - name: 🚀 Launch OmniMedia Studio Server
+      - name: 🚀 Launch OmniAudio Studio Server
         id: start-app
         run: |
-          echo "🚀 Starting OmniMedia Studio FastAPI backend on port 7860..."
+          echo "🚀 Starting OmniAudio Studio FastAPI backend on port 7860..."
           export OMNIMEDIA_DATA_DIR="/tmp/ffmpeg_studio_data"
           export PORT="7860"
           export HOST="0.0.0.0"
@@ -100,11 +100,11 @@ jobs:
           APP_PID=$!
           echo "APP_PID=$APP_PID" >> $GITHUB_ENV
 
-          echo "⏳ Waiting for OmniMedia Studio to initialize..."
+          echo "⏳ Waiting for OmniAudio Studio to initialize..."
           for i in {1..20}; do
             sleep 1
             if curl -s http://localhost:7860/api/system-info | grep -q "online"; then
-              echo "✅ OmniMedia Studio server is active on port 7860!"
+              echo "✅ OmniAudio Studio server is active on port 7860!"
               break
             fi
           done
@@ -142,7 +142,7 @@ jobs:
             echo "================================================================="
             echo "⚡ Powered by Redwanul Haque"
             echo "-----------------------------------------------------------------"
-            echo "🎬 OmniMedia Studio Web UI is Live!"
+            echo "🎵 OmniAudio Studio Web UI is Live!"
             echo "🔗 Direct URL: $CF_URL"
             echo "================================================================="
             echo ""
@@ -163,7 +163,7 @@ jobs:
           botToken="${{ secrets.TELEGRAM_BOT_TOKEN }}"
           chatId="${{ secrets.TELEGRAM_CHAT_ID }}"
           if [ -n "$botToken" ] && [ -n "$chatId" ]; then
-            msg="🎬 *OmniMedia Studio (FFmpeg & yt-dlp)*%0A%0A⚡ *Status:* Online & Ready%0A🔗 *Web UI:* ${STUDIO_URL}%0A⏱️ *Duration:* ${{ github.event.inputs.duration || '340' }} min"
+            msg="🎵 *OmniAudio Studio (FFmpeg Audio & MP3)*%0A%0A⚡ *Status:* Online & Ready%0A🔗 *Web UI:* ${STUDIO_URL}%0A⏱️ *Duration:* ${{ github.event.inputs.duration || '340' }} min"
             curl -s -X POST "https://api.telegram.org/bot${botToken}/sendMessage" \
               -d "chat_id=${chatId}" \
               -d "text=${msg}" \
@@ -174,7 +174,7 @@ jobs:
       # ───────────────────────────────────────────────
       # Step 8: Keep Alive Countdown Loop
       # ───────────────────────────────────────────────
-      - name: ⏳ Keep Alive OmniMedia Studio
+      - name: ⏳ Keep Alive OmniAudio Studio
         run: |
           duration="${{ github.event.inputs.duration }}"
           if [ -z "$duration" ] || ! [[ "$duration" =~ ^[0-9]+$ ]]; then
@@ -188,7 +188,7 @@ jobs:
           echo "================================================================="
           echo "⚡ Powered by Redwanul Haque"
           echo "-----------------------------------------------------------------"
-          echo "🎬 OmniMedia Studio Web UI is running. Target runtime: ${duration} minutes"
+          echo "🎵 OmniAudio Studio Web UI is running. Target runtime: ${duration} minutes"
           echo "🔗 Web UI URL: ${STUDIO_URL}"
           echo "================================================================="
           echo ""
@@ -198,9 +198,8 @@ jobs:
             remaining=$((duration - i))
             pct=$((i * 100 / duration))
 
-            # Health check backend process
             if ! kill -0 "${{ env.APP_PID }}" 2>/dev/null; then
-              echo "⚠️ OmniMedia backend exited. Restarting..."
+              echo "⚠️ OmniAudio backend exited. Restarting..."
               cd "ffmpeg-media-studio"
               python3 app.py > /tmp/ffmpeg_studio_restart.log 2>&1 &
               echo "APP_PID=$!" >> $GITHUB_ENV
