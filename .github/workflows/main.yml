@@ -1,0 +1,270 @@
+name: FFmpeg Media Studio & Video Toolkit (Ubuntu Loop) - by Redwanul Haque
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "⏱️ Runtime in minutes (max 345)"
+        required: false
+        default: "340"
+      loops:
+        description: "🔄 Loop Counter (leave blank, auto-managed by the system)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ffmpeg-media-studio-singleton
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  media-studio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      # ───────────────────────────────────────────────
+      # Step 1: Validate GitHub Token
+      # ───────────────────────────────────────────────
+      - name: 🔑 Validate GitHub Token
+        id: validate
+        run: |
+          token="${{ secrets.GH_PAT }}"
+          if [ -z "$token" ] || [ ${#token} -lt 10 ]; then
+            echo "❌ GH_PAT secret is not set! Go to repo Settings > Secrets > Actions and add GH_PAT."
+            exit 1
+          fi
+          echo "✅ GH_PAT secret is configured (${#token} chars)."
+
+      # ───────────────────────────────────────────────
+      # Step 2: System Specs & Performance Tuning
+      # ───────────────────────────────────────────────
+      - name: ⚡ System Specs & Performance Tuning
+        run: |
+          echo "=============================================="
+          echo "🖥️ Runner Specs & FFmpeg Engine Optimization"
+          echo "CPU Cores : $(nproc)"
+          echo "RAM       : $(free -h | awk '/^Mem:/ {print $2}')"
+          echo "Disk Free : $(df -h / | awk 'NR==2 {print $4}')"
+          echo "=============================================="
+
+      # ───────────────────────────────────────────────
+      # Step 3: Checkout Workspace Repository
+      # ───────────────────────────────────────────────
+      - name: 📥 Checkout Repository Code
+        uses: actions/checkout@v4
+
+      # ───────────────────────────────────────────────
+      # Step 4: Install FFmpeg, yt-dlp & Python Dependencies
+      # ───────────────────────────────────────────────
+      - name: 📦 Install FFmpeg, System Tools & Python Libraries
+        id: install-deps
+        run: |
+          echo "📦 Installing system audio/video codecs & tools..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg qrencode jq curl python3-pip
+
+          echo "🐍 Upgrading pip & installing FastAPI, Uvicorn, yt-dlp..."
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install --no-cache-dir \
+            "fastapi>=0.111.0" \
+            "uvicorn[standard]>=0.30.0" \
+            "yt-dlp>=2026.07.04" \
+            "python-multipart>=0.0.9" \
+            "aiofiles>=23.2.1" \
+            "pydantic>=2.7.0"
+
+          mkdir -p /tmp/ffmpeg_studio_data/uploads /tmp/ffmpeg_studio_data/outputs /tmp/ffmpeg_studio_data/temp
+          echo "✅ Dependencies installed successfully."
+
+      # ───────────────────────────────────────────────
+      # Step 5: Launch OmniMedia Studio Server
+      # ───────────────────────────────────────────────
+      - name: 🚀 Launch OmniMedia Studio Server
+        id: start-app
+        run: |
+          echo "🚀 Starting OmniMedia Studio FastAPI backend on port 7860..."
+          export OMNIMEDIA_DATA_DIR="/tmp/ffmpeg_studio_data"
+          export PORT="7860"
+          export HOST="0.0.0.0"
+
+          cd "ffmpeg-media-studio"
+          python3 app.py > /tmp/ffmpeg_studio.log 2>&1 &
+          APP_PID=$!
+          echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+
+          echo "⏳ Waiting for OmniMedia Studio to initialize..."
+          for i in {1..20}; do
+            sleep 1
+            if curl -s http://localhost:7860/api/system-info | grep -q "online"; then
+              echo "✅ OmniMedia Studio server is active on port 7860!"
+              break
+            fi
+          done
+
+      # ───────────────────────────────────────────────
+      # Step 6: Setup Cloudflare Tunnel & QR Code
+      # ───────────────────────────────────────────────
+      - name: 🌐 Setup Cloudflare Tunnel & QR Code
+        id: cloudflare-tunnel
+        run: |
+          echo "⬇️ Downloading & installing cloudflared..."
+          curl -L -s --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          rm -f cloudflared.deb
+
+          echo "🚀 Launching Cloudflare Tunnel for http://localhost:7860 ..."
+          rm -f /tmp/cloudflared.log
+          cloudflared tunnel --url http://localhost:7860 --http-host-header localhost --logfile /tmp/cloudflared.log > /dev/null 2>&1 &
+
+          echo "⏳ Waiting for Cloudflare Tunnel URL..."
+          CF_URL=""
+          for i in {1..30}; do
+            sleep 2
+            if [ -f /tmp/cloudflared.log ]; then
+              CF_URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -n 1 || true)
+              if [ -n "$CF_URL" ]; then
+                echo "✅ Found Cloudflare URL on attempt $i: $CF_URL"
+                break
+              fi
+            fi
+          done
+
+          if [ -n "$CF_URL" ]; then
+            echo ""
+            echo "================================================================="
+            echo "⚡ Powered by Redwanul Haque"
+            echo "-----------------------------------------------------------------"
+            echo "🎬 OmniMedia Studio Web UI is Live!"
+            echo "🔗 Direct URL: $CF_URL"
+            echo "================================================================="
+            echo ""
+            qrencode -t ANSI256 "$CF_URL" || true
+            echo "STUDIO_URL=$CF_URL" >> $GITHUB_ENV
+          else
+            echo "❌ Cloudflare Tunnel failed to acquire a public URL."
+            cat /tmp/cloudflared.log || true
+            exit 1
+          fi
+
+      # ───────────────────────────────────────────────
+      # Step 7: Optional Telegram Notification
+      # ───────────────────────────────────────────────
+      - name: 📱 Send Telegram Notification
+        if: ${{ env.STUDIO_URL != '' }}
+        run: |
+          botToken="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          chatId="${{ secrets.TELEGRAM_CHAT_ID }}"
+          if [ -n "$botToken" ] && [ -n "$chatId" ]; then
+            msg="🎬 *OmniMedia Studio (FFmpeg & yt-dlp)*%0A%0A⚡ *Status:* Online & Ready%0A🔗 *Web UI:* ${STUDIO_URL}%0A⏱️ *Duration:* ${{ github.event.inputs.duration || '340' }} min"
+            curl -s -X POST "https://api.telegram.org/bot${botToken}/sendMessage" \
+              -d "chat_id=${chatId}" \
+              -d "text=${msg}" \
+              -d "parse_mode=Markdown" > /dev/null 2>&1 || true
+            echo "✅ Telegram notification delivered!"
+          fi
+
+      # ───────────────────────────────────────────────
+      # Step 8: Keep Alive Countdown Loop
+      # ───────────────────────────────────────────────
+      - name: ⏳ Keep Alive OmniMedia Studio
+        run: |
+          duration="${{ github.event.inputs.duration }}"
+          if [ -z "$duration" ] || ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+            duration=340
+          fi
+          if [ "$duration" -gt 345 ]; then
+            duration=345
+          fi
+
+          echo ""
+          echo "================================================================="
+          echo "⚡ Powered by Redwanul Haque"
+          echo "-----------------------------------------------------------------"
+          echo "🎬 OmniMedia Studio Web UI is running. Target runtime: ${duration} minutes"
+          echo "🔗 Web UI URL: ${STUDIO_URL}"
+          echo "================================================================="
+          echo ""
+
+          for ((i=1; i<=duration; i++)); do
+            sleep 60
+            remaining=$((duration - i))
+            pct=$((i * 100 / duration))
+
+            # Health check backend process
+            if ! kill -0 "${{ env.APP_PID }}" 2>/dev/null; then
+              echo "⚠️ OmniMedia backend exited. Restarting..."
+              cd "ffmpeg-media-studio"
+              python3 app.py > /tmp/ffmpeg_studio_restart.log 2>&1 &
+              echo "APP_PID=$!" >> $GITHUB_ENV
+            fi
+
+            if (( i % 15 == 0 )) || (( remaining <= 5 )); then
+              echo "[$(date +'%H:%M:%S')] ⏱️ $remaining min remaining ($pct% elapsed) | WebUI: 🟢 ACTIVE"
+            fi
+          done
+
+          echo "🛑 Session runtime target reached. Initiating graceful rotation..."
+
+      # ───────────────────────────────────────────────
+      # Step 9: Chain Rotation Engine
+      # ───────────────────────────────────────────────
+      - name: 🔁 Chain Rotation Engine
+        if: ${{ !cancelled() }}
+        run: |
+          token="${{ secrets.GH_PAT }}"
+          inputLoops="${{ github.event.inputs.loops }}"
+          if [ -z "$inputLoops" ]; then
+            loops=4
+          else
+            loops=$inputLoops
+          fi
+
+          if [ "$loops" -le 1 ]; then
+            echo "🎯 Chain Finished Successfully. Total iterations completed."
+            exit 0
+          fi
+
+          if [ -z "$token" ] || [ ${#token} -lt 10 ]; then
+            echo "❌ GH_PAT secret is missing. Cannot dispatch next iteration."
+            exit 1
+          fi
+
+          next=$((loops - 1))
+          echo "🔁 Dispatching next iteration: $next remaining..."
+
+          WORKFLOW_FILE=$(basename "${{ github.workflow_ref }}" | cut -d'@' -f1)
+          if [ -z "$WORKFLOW_FILE" ]; then
+            WORKFLOW_FILE="main.yml"
+          fi
+
+          payload=$(jq -n \
+            --arg ref "${{ github.ref_name }}" \
+            --arg next "$next" \
+            --arg duration "${{ github.event.inputs.duration || '340' }}" \
+            '{ref: $ref, inputs: {loops: $next, duration: $duration}}')
+
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+
+          http_code=$(echo "$response" | tail -n 1)
+          body=$(echo "$response" | sed '$d')
+
+          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            echo "✅ Secured handoff executed to loop iteration: $next"
+          else
+            echo "⚠️ Chain dispatch returned HTTP status $http_code:"
+            echo "$body"
+          fi
