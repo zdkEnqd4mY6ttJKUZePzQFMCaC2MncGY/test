@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  omnimedia-studio:
+    build: .
+    container_name: omnimedia-studio
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=7860
+      - HOST=0.0.0.0

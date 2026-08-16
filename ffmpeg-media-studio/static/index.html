@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniMedia Studio — FFmpeg & yt-dlp All-In-One Media Suite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="logo-group">
+        <div class="logo-icon">🎬</div>
+        <div class="logo-text">
+          <h1>OmniMedia <span class="accent-text">Studio</span></h1>
+          <p class="subtitle">FFmpeg & yt-dlp High-Performance Media Suite for Ubuntu</p>
+        </div>
+      </div>
+      <div class="system-badges" id="systemBadges">
+        <div class="badge"><span class="dot online"></span> FFmpeg: <strong id="sysFfmpeg">Loading...</strong></div>
+        <div class="badge"><span class="dot online"></span> yt-dlp: <strong id="sysYtdlp">Loading...</strong></div>
+        <div class="badge">💾 Free Disk: <strong id="sysDisk">-- GB</strong></div>
+        <div class="badge pulse-badge" id="activeJobsBadge">⚡ 0 Active Tasks</div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Layout -->
+    <div class="workspace-layout">
+      
+      <!-- Left Navigation Bar -->
+      <nav class="nav-sidebar">
+        <button class="nav-item active" data-tab="tab-upload">
+          <span class="nav-icon">📂</span>
+          <span class="nav-label">Workbench & Upload</span>
+          <span class="badge-count" id="uploadCountBadge">0</span>
+        </button>
+        <button class="nav-item" data-tab="tab-ytdl">
+          <span class="nav-icon">📥</span>
+          <span class="nav-label">URL Downloader</span>
+        </button>
+        <button class="nav-item" data-tab="tab-merge">
+          <span class="nav-icon">🔀</span>
+          <span class="nav-label">Merge & Concat</span>
+        </button>
+        <button class="nav-item" data-tab="tab-convert">
+          <span class="nav-icon">🔄</span>
+          <span class="nav-label">Format Converter</span>
+        </button>
+        <button class="nav-item" data-tab="tab-trim">
+          <span class="nav-icon">✂️</span>
+          <span class="nav-label">Trim & Cut</span>
+        </button>
+        <button class="nav-item" data-tab="tab-compress">
+          <span class="nav-icon">🗜️</span>
+          <span class="nav-label">Compress & Resize</span>
+        </button>
+        <button class="nav-item" data-tab="tab-audio">
+          <span class="nav-icon">🎵</span>
+          <span class="nav-label">Audio Studio</span>
+        </button>
+        <button class="nav-item" data-tab="tab-effects">
+          <span class="nav-icon">⚡</span>
+          <span class="nav-label">Speed & Transforms</span>
+        </button>
+        <button class="nav-item" data-tab="tab-outputs">
+          <span class="nav-icon">📦</span>
+          <span class="nav-label">Output Gallery</span>
+          <span class="badge-count" id="outputCountBadge">0</span>
+        </button>
+      </nav>
+
+      <!-- Main Content Area -->
+      <main class="main-content">
+
+        <!-- TAB 1: WORKBENCH & DRAG-DROP UPLOAD -->
+        <section class="tab-panel active" id="tab-upload">
+          <div class="panel-header">
+            <h2>Media Workbench & Upload</h2>
+            <p>Drag and drop videos, audio files, or images to inspect metadata and stage them for processing.</p>
+          </div>
+
+          <!-- Drag and Drop Zone -->
+          <div class="drop-zone" id="dropZone">
+            <div class="drop-zone-content">
+              <div class="drop-icon">📤</div>
+              <h3>Drag & Drop media files here</h3>
+              <p>Supports MP4, MKV, WebM, MOV, AVI, MP3, WAV, AAC, FLAC, M4A, GIF, and more</p>
+              <div class="drop-zone-btn">
+                <label for="fileInput" class="btn btn-primary">Browse Files</label>
+                <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*" style="display: none;">
+              </div>
+            </div>
+            <div class="upload-progress-bar" id="uploadProgressBar" style="display: none;">
+              <div class="upload-fill" id="uploadProgressFill"></div>
+              <span class="upload-text" id="uploadProgressText">Uploading... 0%</span>
+            </div>
+          </div>
+
+          <!-- Staged Files List -->
+          <div class="section-card">
+            <div class="section-card-header">
+              <h3>Staged Media Files (<span id="stagedFilesCount">0</span>)</h3>
+              <div class="actions">
+                <button class="btn btn-secondary btn-sm" id="refreshFilesBtn">🔄 Refresh</button>
+                <button class="btn btn-danger-outline btn-sm" id="clearUploadsBtn">🗑️ Clear All Staged</button>
+              </div>
+            </div>
+            <div class="media-grid" id="stagedMediaGrid">
+              <div class="empty-state">
+                <div class="empty-icon">📂</div>
+                <p>No media files uploaded yet. Drag & drop files above or download from URL.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 2: URL DOWNLOADER -->
+        <section class="tab-panel" id="tab-ytdl">
+          <div class="panel-header">
+            <h2>URL Video Downloader</h2>
+            <p>Fetch videos or audio tracks from YouTube, TikTok, Twitter/X, Instagram, Reddit, Vimeo, or direct media links using yt-dlp.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label for="ytdlUrl">Media URL</label>
+              <div class="input-with-action">
+                <input type="url" id="ytdlUrl" placeholder="https://www.youtube.com/watch?v=... or https://x.com/... or https://tiktok.com/..." class="form-input">
+                <button class="btn btn-secondary" id="pasteUrlBtn">📋 Paste</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="ytdlPreset">Download Quality / Format</label>
+                <select id="ytdlPreset" class="form-select">
+                  <option value="best">🌟 Best Quality (Video + Audio combined)</option>
+                  <option value="1080p">📺 1080p Full HD MP4</option>
+                  <option value="720p">💻 720p HD MP4</option>
+                  <option value="480p">📱 480p SD MP4</option>
+                  <option value="audio_mp3">🎵 Audio Only (MP3 320kbps)</option>
+                  <option value="audio_m4a">🎧 Audio Only (M4A / AAC)</option>
+                  <option value="audio_wav">🎼 Audio Only (Lossless WAV)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startDownloadBtn">
+                <span>⬇️ Start Download</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 3: MERGE & CONCAT -->
+        <section class="tab-panel" id="tab-merge">
+          <div class="panel-header">
+            <h2>Merge & Concatenate Clips</h2>
+            <p>Select multiple audio or video files from your workbench, arrange their order, and merge them into a single seamless output file.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="merge-selector-box">
+              <div class="merge-box-header">
+                <h3>Select & Arrange Files to Merge</h3>
+                <span class="helper-text">Drag items or use buttons to reorder</span>
+              </div>
+              <div class="merge-file-list" id="mergeFileList">
+                <!-- Populated dynamically via app.js -->
+              </div>
+            </div>
+
+            <div class="form-row" style="margin-top: 1.5rem;">
+              <div class="form-group">
+                <label for="mergeFormat">Output Format</label>
+                <select id="mergeFormat" class="form-select">
+                  <option value="mp4">MP4 (H.264 / AAC - Universal)</option>
+                  <option value="mkv">MKV (Matroska)</option>
+                  <option value="webm">WebM (VP9 / Opus)</option>
+                  <option value="mp3">MP3 (Audio Only)</option>
+                  <option value="wav">WAV (Lossless Audio)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="mergeResolution">Resolution Normalization</label>
+                <select id="mergeResolution" class="form-select">
+                  <option value="1920x1080">1920x1080 (1080p FHD - Letterbox Pad)</option>
+                  <option value="1280x720">1280x720 (720p HD)</option>
+                  <option value="original">Direct Stream Concat (Requires identical codecs)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startMergeBtn">
+                <span>🔀 Merge Selected Files</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 4: FORMAT CONVERTER -->
+        <section class="tab-panel" id="tab-convert">
+          <div class="panel-header">
+            <h2>Format & Codec Converter</h2>
+            <p>Convert video or audio files with fine-grained control over codecs, CRF quality, bitrate, and FPS presets.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label for="convertSourceFile">Source File</label>
+              <select id="convertSourceFile" class="form-select"></select>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="convertOutputFormat">Target Format</label>
+                <select id="convertOutputFormat" class="form-select">
+                  <optgroup label="Video Formats">
+                    <option value="mp4">MP4 (MPEG-4 Part 14)</option>
+                    <option value="mkv">MKV (Matroska Video)</option>
+                    <option value="webm">WebM (Web Open Media)</option>
+                    <option value="avi">AVI (Audio Video Interleave)</option>
+                    <option value="mov">MOV (QuickTime Movie)</option>
+                    <option value="ts">TS (MPEG Transport Stream)</option>
+                  </optgroup>
+                  <optgroup label="Audio Formats">
+                    <option value="mp3">MP3 (MPEG Audio Layer III)</option>
+                    <option value="wav">WAV (Uncompressed PCM)</option>
+                    <option value="aac">AAC (Advanced Audio Coding)</option>
+                    <option value="flac">FLAC (Free Lossless Audio)</option>
+                    <option value="ogg">OGG (Vorbis / Opus)</option>
+                    <option value="m4a">M4A (Apple Lossless/AAC)</option>
+                  </optgroup>
+                  <optgroup label="Animations">
+                    <option value="gif">GIF (High-Quality Animated Palette)</option>
+                  </optgroup>
+                </select>
+              </div>
+
+              <div class="form-group" id="videoCodecGroup">
+                <label for="convertVideoCodec">Video Codec</label>
+                <select id="convertVideoCodec" class="form-select">
+                  <option value="libx264">H.264 (libx264 - Best Compatibility)</option>
+                  <option value="libx265">H.265 / HEVC (libx265 - High Efficiency)</option>
+                  <option value="libvpx-vp9">VP9 (libvpx-vp9 - Web Friendly)</option>
+                  <option value="copy">Stream Copy (Lossless Remux - Instant)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row" id="videoSettingsRow">
+              <div class="form-group">
+                <label for="convertCrf">Quality (CRF: <span id="crfValueDisplay">23</span>)</label>
+                <input type="range" id="convertCrf" min="0" max="51" value="23" class="form-range">
+                <span class="helper-text">Lower is higher quality (18: Visually lossless, 23: Default, 28: Small size)</span>
+              </div>
+              <div class="form-group">
+                <label for="convertPreset">Encoding Speed Preset</label>
+                <select id="convertPreset" class="form-select">
+                  <option value="ultrafast">Ultrafast (Fastest, larger file)</option>
+                  <option value="fast">Fast</option>
+                  <option value="medium" selected>Medium (Recommended)</option>
+                  <option value="slow">Slow (Higher compression efficiency)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row" id="audioSettingsRow">
+              <div class="form-group">
+                <label for="convertAudioCodec">Audio Codec</label>
+                <select id="convertAudioCodec" class="form-select">
+                  <option value="aac">AAC (192kbps - Standard)</option>
+                  <option value="libmp3lame">MP3 (libmp3lame)</option>
+                  <option value="libopus">Opus (Modern High-Fidelity)</option>
+                  <option value="flac">FLAC (Lossless)</option>
+                  <option value="copy">Stream Copy (Preserve Audio Stream)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="convertAudioBitrate">Audio Bitrate</label>
+                <select id="convertAudioBitrate" class="form-select">
+                  <option value="128">128 kbps (Standard)</option>
+                  <option value="192" selected>192 kbps (High Quality)</option>
+                  <option value="256">256 kbps (Premium)</option>
+                  <option value="320">320 kbps (Maximum)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startConvertBtn">
+                <span>🔄 Start Conversion</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 5: TRIM & CUT -->
+        <section class="tab-panel" id="tab-trim">
+          <div class="panel-header">
+            <h2>Trim, Cut & Segment</h2>
+            <p>Cut video or audio clips with frame accuracy or fast lossless keyframe splitting.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label for="trimSourceFile">Select Media File</label>
+              <select id="trimSourceFile" class="form-select"></select>
+            </div>
+
+            <!-- Preview Player for Timeline Scrubbing -->
+            <div class="preview-player-container">
+              <video id="trimPreviewPlayer" controls class="media-preview-element"></video>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="trimStartTime">Start Time (HH:MM:SS or Seconds)</label>
+                <div class="input-with-action">
+                  <input type="text" id="trimStartTime" value="00:00:00" class="form-input">
+                  <button class="btn btn-secondary btn-sm" id="setTrimStartBtn">📍 Set Current</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="trimEndTime">End Time (HH:MM:SS or Seconds)</label>
+                <div class="input-with-action">
+                  <input type="text" id="trimEndTime" value="00:00:10" class="form-input">
+                  <button class="btn btn-secondary btn-sm" id="setTrimEndBtn">📍 Set Current</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Cutting Mode</label>
+              <div class="radio-group">
+                <label class="radio-label">
+                  <input type="radio" name="trimMode" value="precise" checked>
+                  <span><strong>Frame-Accurate Re-encode</strong> (Exact cut point, clean frames)</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="trimMode" value="fast">
+                  <span><strong>Lossless Stream Copy</strong> (Instant, snaps to closest keyframe)</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startTrimBtn">
+                <span>✂️ Cut & Export Clip</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 6: COMPRESS & RESIZE -->
+        <section class="tab-panel" id="tab-compress">
+          <div class="panel-header">
+            <h2>Compress & Downscale</h2>
+            <p>Shrink video files to target sizes (e.g. Discord 8MB/25MB limits) or downscale resolutions for web optimization.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label for="compressSourceFile">Select Video File</label>
+              <select id="compressSourceFile" class="form-select"></select>
+            </div>
+
+            <div class="form-group">
+              <label>Target File Size Preset</label>
+              <div class="preset-btn-group">
+                <button class="btn btn-secondary preset-btn" data-size="8">💬 Discord Free (8 MB)</button>
+                <button class="btn btn-secondary preset-btn" data-size="25">📧 Email / Nitro (25 MB)</button>
+                <button class="btn btn-secondary preset-btn" data-size="50">⚡ WhatsApp (50 MB)</button>
+                <button class="btn btn-secondary preset-btn" data-size="100">📦 Medium Web (100 MB)</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="compressTargetSize">Target Size in MB (Optional)</label>
+                <input type="number" id="compressTargetSize" placeholder="e.g. 8.0" step="0.5" class="form-input">
+              </div>
+              <div class="form-group">
+                <label for="compressResolution">Downscale Resolution</label>
+                <select id="compressResolution" class="form-select">
+                  <option value="1920x1080">1080p FHD (1920x1080)</option>
+                  <option value="1280x720" selected>720p HD (1280x720 - Balanced)</option>
+                  <option value="854x480">480p SD (854x480 - High Compression)</option>
+                  <option value="640x360">360p Low (640x360 - Maximum Compression)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startCompressBtn">
+                <span>🗜️ Compress Video</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 7: AUDIO STUDIO -->
+        <section class="tab-panel" id="tab-audio">
+          <div class="panel-header">
+            <h2>Audio Track Studio</h2>
+            <p>Extract audio tracks from videos, replace background soundtracks, or mix voiceovers with background music.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label>Operation Type</label>
+              <div class="radio-group">
+                <label class="radio-label">
+                  <input type="radio" name="audioStudioAction" value="extract" checked>
+                  <span><strong>Extract Audio Track</strong> (Save video soundtrack to MP3/WAV/AAC)</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="audioStudioAction" value="replace">
+                  <span><strong>Replace Video Audio</strong> (Swap video soundtrack with a new audio file)</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="audioStudioAction" value="mix">
+                  <span><strong>Mix / Blend Audio</strong> (Overlay background music over original audio)</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="audioVideoFile">Video Source File</label>
+                <select id="audioVideoFile" class="form-select"></select>
+              </div>
+              <div class="form-group" id="audioTrackFileGroup" style="display: none;">
+                <label for="audioTrackFile">Audio Track File</label>
+                <select id="audioTrackFile" class="form-select"></select>
+              </div>
+            </div>
+
+            <div class="form-row" id="audioExtractFormatRow">
+              <div class="form-group">
+                <label for="audioExtractFormat">Extracted Audio Format</label>
+                <select id="audioExtractFormat" class="form-select">
+                  <option value="mp3">MP3 (320 kbps)</option>
+                  <option value="wav">WAV (Uncompressed PCM)</option>
+                  <option value="aac">AAC (192 kbps)</option>
+                  <option value="flac">FLAC (Lossless)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row" id="audioVolumeControlsRow" style="display: none;">
+              <div class="form-group">
+                <label for="audioOrigVol">Original Video Audio Volume (<span id="audioOrigVolDisplay">100%</span>)</label>
+                <input type="range" id="audioOrigVol" min="0" max="2" step="0.1" value="1.0" class="form-range">
+              </div>
+              <div class="form-group">
+                <label for="audioNewVol">New Audio Track Volume (<span id="audioNewVolDisplay">100%</span>)</label>
+                <input type="range" id="audioNewVol" min="0" max="2" step="0.1" value="1.0" class="form-range">
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startAudioOpBtn">
+                <span>🎵 Process Audio</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 8: SPEED & TRANSFORMS -->
+        <section class="tab-panel" id="tab-effects">
+          <div class="panel-header">
+            <h2>Speed & Video Transforms</h2>
+            <p>Accelerate or slow down video/audio with automatic pitch correction, reverse clips, or rotate orientation.</p>
+          </div>
+
+          <div class="form-card">
+            <div class="form-group">
+              <label for="effectSourceFile">Select Media File</label>
+              <select id="effectSourceFile" class="form-select"></select>
+            </div>
+
+            <div class="form-group">
+              <label for="effectSpeed">Playback Speed (<span id="speedValueDisplay">1.0x</span>)</label>
+              <input type="range" id="effectSpeed" min="0.25" max="4.0" step="0.25" value="1.0" class="form-range">
+              <div class="speed-ticks">
+                <span>0.25x (SlowMo)</span>
+                <span>0.5x</span>
+                <span>1.0x (Normal)</span>
+                <span>1.5x</span>
+                <span>2.0x</span>
+                <span>4.0x (Timelapse)</span>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="effectRotate">Rotation</label>
+                <select id="effectRotate" class="form-select">
+                  <option value="0">No Rotation (0°)</option>
+                  <option value="90">90° Clockwise</option>
+                  <option value="180">180° Flip</option>
+                  <option value="270">270° (90° Counter-Clockwise)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Mirror / Flip</label>
+                <div class="checkbox-group">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="effectHflip">
+                    <span>Horizontal Flip (Mirror)</span>
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="effectVflip">
+                    <span>Vertical Flip (Upside Down)</span>
+                  </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="effectReverse">
+                    <span>Reverse Playback</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-lg" id="startEffectBtn">
+                <span>⚡ Apply Transformations</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 9: OUTPUT GALLERY -->
+        <section class="tab-panel" id="tab-outputs">
+          <div class="panel-header">
+            <h2>Processed Output Gallery</h2>
+            <p>Preview, play, and download your finished media files or export them as a batch ZIP.</p>
+          </div>
+
+          <div class="section-card">
+            <div class="section-card-header">
+              <h3>Rendered Media Files (<span id="renderedFilesCount">0</span>)</h3>
+              <div class="actions">
+                <a href="/api/download-all-zip?category=outputs" class="btn btn-primary btn-sm">📦 Download All (ZIP)</a>
+                <button class="btn btn-secondary btn-sm" id="refreshOutputsBtn">🔄 Refresh</button>
+                <button class="btn btn-danger-outline btn-sm" id="clearOutputsBtn">🗑️ Clear Outputs</button>
+              </div>
+            </div>
+            <div class="media-grid" id="renderedMediaGrid">
+              <div class="empty-state">
+                <div class="empty-icon">📦</div>
+                <p>No rendered outputs yet. Complete a media operation to see results here.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- Active Task Status Bar / Floating Drawer -->
+    <div class="task-drawer" id="taskDrawer" style="display: none;">
+      <div class="task-drawer-header">
+        <div class="task-info">
+          <div class="task-spinner"></div>
+          <div>
+            <h4 id="taskTitle">Processing Media Task...</h4>
+            <span class="task-subtext" id="taskSubtext">Initializing FFmpeg / yt-dlp pipeline...</span>
+          </div>
+        </div>
+        <div class="task-header-actions">
+          <button class="btn btn-sm btn-secondary" id="toggleLogsBtn">📜 View Logs</button>
+          <button class="btn btn-sm btn-danger" id="cancelTaskBtn">Cancel</button>
+        </div>
+      </div>
+      <div class="task-progress-container">
+        <div class="task-progress-bar" id="taskProgressBar">
+          <div class="task-progress-fill" id="taskProgressFill"></div>
+        </div>
+        <div class="task-metrics">
+          <span id="taskPercent">0%</span>
+          <span id="taskSpeed">Speed: --</span>
+        </div>
+      </div>
+      <div class="task-logs-terminal" id="taskLogsTerminal" style="display: none;">
+        <pre id="taskLogsContent">FFmpeg processing console output...</pre>
+      </div>
+    </div>
+
+    <!-- Media Inspector / Preview Modal -->
+    <div class="modal-backdrop" id="previewModal" style="display: none;">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="modalMediaTitle">Media Inspector</h3>
+          <button class="modal-close" id="closeModalBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-player-box" id="modalPlayerBox">
+            <!-- Dynamic video / audio tag injected here -->
+          </div>
+          <div class="modal-metadata-box" id="modalMetadataBox">
+            <!-- Dynamic metadata stream table -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <a href="#" id="modalDownloadBtn" class="btn btn-primary" download>⬇️ Download File</a>
+          <button class="btn btn-secondary" id="modalCloseActionBtn">Close</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
